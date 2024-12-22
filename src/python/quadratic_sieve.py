@@ -1,8 +1,10 @@
 import numpy as np
 import random
 import logging
+import time
 from math import ceil, floor, sqrt, exp, log, isqrt
 import galois
+from pprint import pprint
 
 # -------------------------------------------------------------------
 # Configure Logging
@@ -42,7 +44,6 @@ def gcd(a, b):
 def legendre(n, p):
     """
     Compute the Legendre symbol (n/p).
-    The Legendre symbol is defined for p an odd prime.
     Returns:
        1  if n is a quadratic residue mod p
        -1 if n is a non-quadratic residue mod p
@@ -93,19 +94,20 @@ def is_prime(n, _precision_for_huge_n=16):
     if n in _known_primes:
         return True
     if any((n % p) == 0 for p in _known_primes) or n in (0, 1):
-        return n in _known_primes  # ensures 2 or 3 recognized as prime, others as not prime
+        return n in _known_primes  # ensures 2 or 3 recognized as prime, others not
 
     d, s = n - 1, 0
     while d % 2 == 0:
         d >>= 1
         s += 1
 
+    # Check small ranges with small sets of bases
     if n < 1373653:
         return not any(_try_composite(a, d, n, s) for a in (2, 3))
     if n < 25326001:
         return not any(_try_composite(a, d, n, s) for a in (2, 3, 5))
     if n < 118670087467:
-        if n == 3215031751: 
+        if n == 3215031751:
             return False
         return not any(_try_composite(a, d, n, s) for a in (2, 3, 5, 7))
     if n < 2152302898747:
@@ -115,6 +117,7 @@ def is_prime(n, _precision_for_huge_n=16):
     if n < 341550071728321:
         return not any(_try_composite(a, d, n, s) for a in (2, 3, 5, 7, 11, 13, 17))
 
+    # Otherwise, fall back to testing with known primes
     return not any(_try_composite(a, d, n, s) 
                    for a in _known_primes[:_precision_for_huge_n])
 
@@ -137,13 +140,13 @@ def brent(N):
     while g == 1:
         x = y
         for _ in range(r):
-            y = (y*y % N + c) % N
+            y = (y * y % N + c) % N
         k = 0
         while k < r and g == 1:
             ys = y
             for _ in range(min(m, r - k)):
-                y = (y*y % N + c) % N
-                q = q * abs(x - y) % N
+                y = (y * y % N + c) % N
+                q = (q * abs(x - y)) % N
             g = gcd(q, N)
             k += m
         r <<= 1
@@ -223,7 +226,7 @@ def tonelli_shanks(a, p):
     m = 0
     for i in range(s):
         i1 = pow(2, s - 1 - i)
-        i2 = A * pow(D, m, p) % p
+        i2 = (A * pow(D, m, p)) % p
         i3 = pow(i2, i1, p)
         if i3 == p - 1:
             m += pow(2, i)
@@ -251,14 +254,14 @@ def poly(t, n):
     """
     Polynomial for Quadratic Sieve: f(t) = t^2 - n.
     """
-    return pow(t, 2) - n
+    return t*t - n  # equivalent to pow(t, 2) but slightly faster
 
 def find_b(N):
     """
     Typical heuristic for factor base bound B.
     """
-    return ceil(exp(sqrt(0.5 * log(N) * log(log(N))))) + 1
-
+    x = ceil(exp(sqrt(0.5 * log(N) * log(log(N))))) + 1
+    return x // 8
 def get_smooth_b(N, B):
     """
     Build the factor base: primes p <= B where (N/p) = 1.
@@ -296,7 +299,7 @@ def build_factor_base(N, B):
 # -------------------------------------------------------------------
 # STEP 3: Sieve Phase - Find Potential Smooth Values
 # -------------------------------------------------------------------
-def sieve_interval(N, factor_base, I_multiplier=182):
+def sieve_interval(N, factor_base, I_multiplier=3000):
     """
     Sieve to find potential smooth values in the interval [base, base+I).
     Returns:
@@ -318,8 +321,6 @@ def sieve_interval(N, factor_base, I_multiplier=182):
 
     # For each prime in the factor base (except 2), remove its powers
     for p in factor_base[1:]:
-        # Solve x^2 ≡ N (mod p) => x = ± sqrt(N mod p)
-        # Then map it to offsets in [0..I)
         root1, root2 = tonelli_shanks(N, p)
         # Shift by -base, mod p
         a = (root1 - base) % p
@@ -341,6 +342,9 @@ def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
     """
     For each index i in [0..I), if the sieve_values[i] is 1,
     we factor poly(base + i, N) fully to build a row in the exponent matrix.
+
+    T is a parameter that can be used to stop once we have enough relations
+    (e.g. len(factor_base) + T).
     """
     matrix = []
     relations = []
@@ -350,9 +354,10 @@ def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
 
     for i_offset in range(I):
         if sieve_values[i_offset] == 1:
-            if len(relations) == len(factor_base) + T:
+            # Stop early if we already have enough relations
+            if len(relations) == fb_len + T:
                 break
-            # This value is fully divisible by the factor base
+
             row = zero_row.copy()
             value = poly(base + i_offset, N)
 
@@ -386,7 +391,6 @@ def solve_dependencies(matrix):
     logger.info("Solving linear system in GF(2).")
     gf = galois.GF(2)
     A = gf(np.array(matrix))
-    # Vectors 'v' in left null space satisfy vA = 0
     return A.left_null_space()
 
 # -------------------------------------------------------------------
@@ -422,37 +426,59 @@ def quadratic_sieve(N, B=None):
     """
     Perform the Quadratic Sieve on N.
     Splits the entire process into smaller steps.
+    Logs timing for each stage.
     """
+    overall_start = time.time()
     logger.info("========== Quadratic Sieve Start ==========")
     logger.info("Factoring N = %d", N)
 
     # Step 1: Decide Bound
+    step_start = time.time()
     B = decide_bound(N, B)
+    step_end = time.time()
+    logger.info("Step 1 (Decide Bound) took %.3f seconds", step_end - step_start)
 
     # Step 2: Build Factor Base
+    step_start = time.time()
     factor_base = build_factor_base(N, B)
+    step_end = time.time()
+    logger.info("Step 2 (Build Factor Base) took %.3f seconds", step_end - step_start)
 
     # Step 3: Sieve Phase
+    step_start = time.time()
     base, I, sieve_vals = sieve_interval(N, factor_base)
+    step_end = time.time()
+    logger.info("Step 3 (Sieve Interval) took %.3f seconds", step_end - step_start)
 
     # Step 4: Build Exponent Matrix
-    matrix, relations, factorizations = build_exponent_matrix(
-        N, base, I, sieve_vals, factor_base
-    )
+    T = 1
+    step_start = time.time()
+    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_vals, factor_base, T)
+    step_end = time.time()
+    logger.info("Step 4 (Build Exponent Matrix) took %.3f seconds", step_end - step_start)
 
-    if len(matrix) < len(factor_base):
+    if len(matrix) < len(factor_base) + T:
         logger.warning("Not enough smooth relations found. Try increasing the sieve interval.")
         return 0, 0
-
     # Step 5: Solve for Dependencies (GF(2))
+    step_start = time.time()
     dep_vectors = solve_dependencies(matrix)
+    step_end = time.time()
+    logger.info("Step 5 (Solve Dependencies) took %.3f seconds", step_end - step_start)
 
     # Step 6: Attempt to Extract Factors
+    step_start = time.time()
     f1, f2 = extract_factors(N, relations, factorizations, dep_vectors)
+    step_end = time.time()
+    logger.info("Step 6 (Extract Factors) took %.3f seconds", step_end - step_start)
+
     if f1 and f2:
         logger.info("Quadratic Sieve successful: %d * %d = %d", f1, f2, N)
     else:
         logger.warning("No non-trivial factors found with the current settings.")
+
+    overall_end = time.time()
+    logger.info("Total time for Quadratic Sieve: %.3f seconds", overall_end - overall_start)
     logger.info("========== Quadratic Sieve End ==========")
 
     return f1, f2
@@ -462,10 +488,10 @@ def quadratic_sieve(N, B=None):
 # -------------------------------------------------------------------
 if __name__ == '__main__':
     # Initialize small primes list
-    init_known_primes(limit=1000)
+    init_known_primes(limit=10000)
 
-    # Example composite number
+    # Example composite numbers
     N = 41126566532996951593624199 * 2697660919
-    N = 489676279211111 * 230114213738729
+
     # Run Quadratic Sieve
     factor1, factor2 = quadratic_sieve(N)
