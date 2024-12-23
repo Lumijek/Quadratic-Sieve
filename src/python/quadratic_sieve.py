@@ -5,6 +5,8 @@ import time
 from math import ceil, floor, sqrt, exp, log, isqrt
 import galois
 from pprint import pprint
+from line_profiler import LineProfiler
+
 
 # -------------------------------------------------------------------
 # Configure Logging
@@ -22,19 +24,30 @@ _known_primes = [2, 3]
 
 def init_known_primes(limit=1000):
     """
-    Initialize the known primes up to 'limit' using 'is_prime' test.
+    Initialize the known primes up to 'limit' using the 'is_prime' test.
     This helps optimize primality checks for smaller numbers.
+    
+    Args:
+        limit (int): The upper bound to search for prime numbers.
     """
     global _known_primes
+    # Generate primes from 5 to limit, skipping even numbers
     _known_primes += [x for x in range(5, limit, 2) if is_prime(x)]
     logger.info("Initialized _known_primes up to %d. Total known primes: %d", limit, len(_known_primes))
 
 # -------------------------------------------------------------------
-# Number Theory Utils
+# Number Theory Utilities
 # -------------------------------------------------------------------
 def gcd(a, b):
     """
     Compute the GCD of two integers a and b using Euclid's Algorithm.
+    
+    Args:
+        a (int): First integer.
+        b (int): Second integer.
+    
+    Returns:
+        int: Greatest Common Divisor of a and b.
     """
     a, b = abs(a), abs(b)
     while a:
@@ -44,21 +57,31 @@ def gcd(a, b):
 def legendre(n, p):
     """
     Compute the Legendre symbol (n/p).
+    
+    Args:
+        n (int): The numerator.
+        p (int): The prime denominator.
+    
     Returns:
-       1  if n is a quadratic residue mod p
-       -1 if n is a non-quadratic residue mod p
-        0 if n ≡ 0 (mod p)
+        int: 1 if n is a quadratic residue mod p,
+             -1 if n is a non-quadratic residue mod p,
+              0 if n ≡ 0 mod p.
     """
     val = pow(n, (p - 1) // 2, p)
     return val - p if val > 1 else val
 
 def jacobi(a, m):
     """
-    Compute the Jacobi symbol (a/m). 
+    Compute the Jacobi symbol (a/m).
+    
+    Args:
+        a (int): The numerator.
+        m (int): The odd integer denominator.
+    
     Returns:
-       1  if a is a QR modulo each prime factor of m
-       -1 if a is a non-QR for at least one prime factor
-        0 if a and m are not coprime
+        int: 1 if a is a QR modulo each prime factor of m,
+             -1 if a is a non-QR for at least one prime factor,
+              0 if a and m are not coprime.
     """
     a = a % m
     t = 1
@@ -79,6 +102,15 @@ def jacobi(a, m):
 def _try_composite(a, d, n, s):
     """
     Internal helper for the Miller-Rabin primality test.
+    
+    Args:
+        a (int): Base to test.
+        d (int): The odd part of n-1.
+        n (int): The number to test.
+        s (int): The exponent of 2 in n-1.
+    
+    Returns:
+        bool: True if n is definitely composite, False otherwise.
     """
     if pow(a, d, n) == 1:
         return False
@@ -90,6 +122,13 @@ def _try_composite(a, d, n, s):
 def is_prime(n, _precision_for_huge_n=16):
     """
     Miller-Rabin primality test with specific bases for certain ranges.
+    
+    Args:
+        n (int): The number to test for primality.
+        _precision_for_huge_n (int): Number of bases to test for very large n.
+    
+    Returns:
+        bool: True if n is likely prime, False if composite.
     """
     if n in _known_primes:
         return True
@@ -128,6 +167,12 @@ def brent(N):
     """
     Brent's factorization algorithm (variation of Pollard's Rho).
     Returns a non-trivial factor of N.
+    
+    Args:
+        N (int): The composite number to factor.
+    
+    Returns:
+        int: A non-trivial factor of N.
     """
     if N % 2 == 0:
         return 2
@@ -162,6 +207,13 @@ def brent(N):
 def factorise(n, factors):
     """
     Factorize 'n' and accumulate found factors in 'factors'.
+    
+    Args:
+        n (int): The number to factorize.
+        factors (list): The list to store found factors.
+    
+    Returns:
+        int: The remaining part of n after factorization.
     """
     rem = n
     while True:
@@ -170,7 +222,7 @@ def factorise(n, factors):
             break
 
         f = brent(rem)
-        # if the factor is the same as remainder, try again
+        # If the factor is the same as remainder, try again
         while f == rem:
             f = brent(rem)
 
@@ -181,7 +233,7 @@ def factorise(n, factors):
             else:
                 rem_f = factorise(f, factors)
                 rem = (rem // f) * rem_f
-                # remove rem_f if it was appended
+                # Remove rem_f if it was appended
                 if rem_f in factors:
                     factors.remove(rem_f)
         else:
@@ -195,6 +247,13 @@ def tonelli_shanks(a, p):
     """
     Solve x^2 ≡ a (mod p) for x.
     Returns (x, p - x).
+    
+    Args:
+        a (int): The quadratic residue.
+        p (int): The prime modulus.
+    
+    Returns:
+        tuple: A pair of solutions (x, p - x).
     """
     a %= p
     if p % 8 in [3, 7]:
@@ -234,41 +293,145 @@ def tonelli_shanks(a, p):
     return x, p - x
 
 # -------------------------------------------------------------------
+# Gaussian Elimination and Null Space Extraction
+# -------------------------------------------------------------------
+def gauss_elim(x):
+    """
+    Perform Gaussian elimination on the binary matrix 'x' over GF(2).
+    It transforms the matrix into its row-echelon form and records the pivot columns.
+
+    Args:
+        x (np.ndarray): A binary matrix (containing 0 or 1).
+
+    Returns:
+        tuple:
+            - np.ndarray: Row-echelon form of the matrix (in-place, dtype=int8).
+            - list: Sorted list of pivot column indices.
+    """
+    # Step 1: Convert to bool for faster XOR
+    x = x.astype(bool, copy=False)
+
+    n, m = x.shape
+    marks = []
+    
+    for i in range(n):
+        # Find the leftmost True in row i
+        row = x[i]
+        ones = np.flatnonzero(row)
+        if ones.size == 0:
+            continue
+        
+        pivot = ones[0]
+        marks.append(pivot)
+        
+        # Create a mask for rows that have True in the pivot column
+        mask = x[:, pivot].copy()
+        mask[i] = False
+        
+        # XOR all masked rows with the current row
+        x[mask] ^= row
+    
+    # Step 3: Convert back to int8 (0 or 1)
+    return x.astype(np.int8, copy=False), sorted(marks)
+
+
+def find_null_space_GF2(reduced_matrix, pivot_rows):
+    """
+    Find null space vectors of the reduced binary matrix over GF(2).
+    
+    Args:
+        reduced_matrix (np.ndarray): The row-echelon form of the matrix after Gaussian elimination.
+        pivot_rows (list): List of pivot row indices obtained from Gaussian elimination.
+    
+    Returns:
+        np.ndarray: Array of null space vectors.
+    """
+    n, m = reduced_matrix.shape
+    nulls = []  # List to store null space vectors
+    # Identify free rows (rows that are not pivot rows)
+    free_rows = [row for row in range(n) if row not in pivot_rows]
+
+    for row in free_rows:
+        ones = np.where(reduced_matrix[row] == 1)[0]  # Columns with '1's in the free row
+        null = np.zeros(n)  # Initialize a null vector with zeros
+        null[row] = 1  # Set the position corresponding to the free row to '1'
+        i = 0  # Row index counter
+
+        for r in reduced_matrix:
+            for one in ones:
+                if r[one] == 1 and i in pivot_rows:
+                    null[i] = 1  # Set the corresponding pivot variable to '1' if needed
+            i += 1  # Move to the next row
+
+        nulls.append(null)  # Append the constructed null vector
+        break
+
+    nulls = np.asarray(nulls, dtype=np.int8)  # Convert the list to a NumPy array
+    return nulls  # Return the array of null space vectors
+
+# -------------------------------------------------------------------
 # Prime Sieve
 # -------------------------------------------------------------------
 def prime_sieve(n):
     """
     Return a list of primes up to 'n' using the Sieve of Eratosthenes.
+    
+    Args:
+        n (int): The upper limit to sieve for primes.
+    
+    Returns:
+        list: List of prime numbers up to 'n'.
     """
-    sieve_array = np.ones((n+1,), dtype=bool)
-    sieve_array[0], sieve_array[1] = False, False
+    sieve_array = np.ones((n+1,), dtype=bool)  # Initialize sieve array
+    sieve_array[0], sieve_array[1] = False, False  # 0 and 1 are not primes
     for i in range(2, int(n**0.5) + 1):
         if sieve_array[i]:
-            sieve_array[i*2 :: i] = False
-    return np.where(sieve_array)[0].tolist()
+            sieve_array[i*2 :: i] = False  # Mark multiples of i as non-prime
+    return np.where(sieve_array)[0].tolist()  # Extract prime numbers
 
 # -------------------------------------------------------------------
 # Quadratic Sieve Helper Functions
 # -------------------------------------------------------------------
 def poly(t, n):
     """
-    Polynomial for Quadratic Sieve: f(t) = t^2 - n.
+    Polynomial used in the Quadratic Sieve: f(t) = t^2 - n.
+    
+    Args:
+        t (int): The variable.
+        n (int): The number to factor.
+    
+    Returns:
+        int: The value of the polynomial at t.
     """
-    return t*t - n  # equivalent to pow(t, 2) but slightly faster
+    return t*t - n  # Equivalent to pow(t, 2) but slightly faster
 
 def find_b(N):
     """
-    Typical heuristic for factor base bound B.
+    Typical heuristic to determine the factor base bound B.
+    
+    Args:
+        N (int): The number to factor.
+    
+    Returns:
+        int: The bound B for the factor base.
     """
     x = ceil(exp(sqrt(0.5 * log(N) * log(log(N))))) + 1
-    return x // 8
+    return x // 16
+
 def get_smooth_b(N, B):
     """
     Build the factor base: primes p <= B where (N/p) = 1.
+    
+    Args:
+        N (int): The number to factor.
+        B (int): The bound for the factor base.
+    
+    Returns:
+        list: The factor base as a list of primes.
     """
-    primes = prime_sieve(B)
-    factor_base = [2]  # Always include 2
-    for p in primes[1:]:  # skip 2
+    primes = prime_sieve(B)  # Generate primes up to B
+    factor_base = [2]  # Always include 2 in the factor base
+    for p in primes[1:]:  # Skip 2 and check for quadratic residues
         if legendre(N, p) == 1:
             factor_base.append(p)
     return factor_base
@@ -278,7 +441,14 @@ def get_smooth_b(N, B):
 # -------------------------------------------------------------------
 def decide_bound(N, B=None):
     """
-    Decide on the bound B if none is provided.
+    Decide on the bound B if none is provided using a heuristic.
+    
+    Args:
+        N (int): The number to factor.
+        B (int, optional): The bound for the factor base. If None, compute using heuristic.
+    
+    Returns:
+        int: The bound B for the factor base.
     """
     if B is None:
         B = find_b(N)
@@ -291,6 +461,13 @@ def decide_bound(N, B=None):
 def build_factor_base(N, B):
     """
     Build the factor base for the Quadratic Sieve.
+    
+    Args:
+        N (int): The number to factor.
+        B (int): The bound for the factor base.
+    
+    Returns:
+        list: The factor base as a list of primes.
     """
     fb = get_smooth_b(N, B)
     logger.info("Factor base size: %d", len(fb))
@@ -299,34 +476,39 @@ def build_factor_base(N, B):
 # -------------------------------------------------------------------
 # STEP 3: Sieve Phase - Find Potential Smooth Values
 # -------------------------------------------------------------------
-def sieve_interval(N, factor_base, I_multiplier=3000):
+def sieve_interval(N, factor_base, I_multiplier=18000):
     """
     Sieve to find potential smooth values in the interval [base, base+I).
+    
+    Args:
+        N (int): The number to factor.
+        factor_base (list): The factor base primes.
+        I_multiplier (int): Multiplier to determine the interval size based on factor base size.
+    
     Returns:
-       - The offset base (floor(sqrt(N)) + 1)
-       - The length of the interval
-       - The array of partially factored values
+        tuple: 
+            - int: The base offset (floor(sqrt(N)) + 1).
+            - int: The length of the interval.
+            - list: The array of partially factored values.
     """
-    # Interval size is factor_base_size * I_multiplier
-    I = len(factor_base) * I_multiplier
-    base = floor(sqrt(N)) + 1
+    I = len(factor_base) * I_multiplier  # Determine interval size
+    base = floor(sqrt(N)) + 1  # Starting point for sieving
 
-    # Evaluate polynomial t^2 - N over the interval
+    # Evaluate the polynomial f(t) = t^2 - N over the interval
     sieve_values = [poly(base + x, N) for x in range(I)]
 
-    # Remove powers of 2 from each value
+    # Remove powers of 2 from each sieve value
     for i in range(I):
         while sieve_values[i] % 2 == 0:
             sieve_values[i] //= 2
 
-    # For each prime in the factor base (except 2), remove its powers
-    for p in factor_base[1:]:
-        root1, root2 = tonelli_shanks(N, p)
-        # Shift by -base, mod p
-        a = (root1 - base) % p
+    # Remove powers of other primes in the factor base
+    for p in factor_base[1:]:  # Skip 2 as it's already handled
+        root1, root2 = tonelli_shanks(N, p)  # Find square roots of N mod p
+        a = (root1 - base) % p  # Adjust roots to sieve offsets
         b = (root2 - base) % p
 
-        # Remove powers of p from valid offsets
+        # Eliminate multiples of p in the sieve
         for r in [a, b]:
             while r < I:
                 while sieve_values[r] % p == 0:
@@ -340,11 +522,21 @@ def sieve_interval(N, factor_base, I_multiplier=3000):
 # -------------------------------------------------------------------
 def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
     """
-    For each index i in [0..I), if the sieve_values[i] is 1,
-    we factor poly(base + i, N) fully to build a row in the exponent matrix.
-
-    T is a parameter that can be used to stop once we have enough relations
-    (e.g. len(factor_base) + T).
+    Build the exponent matrix for the Quadratic Sieve.
+    
+    Args:
+        N (int): The number to factor.
+        base (int): The base offset for sieving.
+        I (int): The interval length.
+        sieve_values (list): The array of partially factored sieve values.
+        factor_base (list): The factor base primes.
+        T (int): Threshold to determine when to stop collecting relations.
+    
+    Returns:
+        tuple: 
+            - list: The exponent matrix.
+            - list: The list of relation identifiers.
+            - list: The list of factorizations corresponding to each relation.
     """
     matrix = []
     relations = []
@@ -353,30 +545,29 @@ def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
     zero_row = [0] * fb_len
 
     for i_offset in range(I):
-        if sieve_values[i_offset] == 1:
-            # Stop early if we already have enough relations
+        if sieve_values[i_offset] == 1:  # Check if the value is fully smooth over the factor base
             if len(relations) == fb_len + T:
-                break
+                break  # Stop if enough relations are collected
 
             row = zero_row.copy()
-            value = poly(base + i_offset, N)
+            value = poly(base + i_offset, N)  # Compute f(t) = t^2 - N
 
-            # Factor completely (to account for multiplicities)
+            # Fully factorize the value using the factor base
             local_factors = []
             factorise(value, local_factors)
             local_factors.sort()
 
-            # Count each prime factor mod 2
+            # Count each prime factor modulo 2 for the exponent matrix
             counts = {}
             for fac in local_factors:
                 counts[fac] = counts.get(fac, 0) + 1
 
             for idx, prime in enumerate(factor_base):
-                row[idx] = counts.get(prime, 0) % 2
+                row[idx] = counts.get(prime, 0) % 2  # Record exponent modulo 2
 
-            matrix.append(row)
-            relations.append(base + i_offset)
-            factorizations.append(local_factors)
+            matrix.append(row)  # Add the row to the exponent matrix
+            relations.append(base + i_offset)  # Record the relation identifier
+            factorizations.append(local_factors)  # Store the factorization
 
     logger.info("Number of smooth relations: %d", len(relations))
     return matrix, relations, factorizations
@@ -386,38 +577,63 @@ def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
 # -------------------------------------------------------------------
 def solve_dependencies(matrix):
     """
+    Perform linear algebra over GF(2) to find dependencies among relations.
+    
+    Args:
+        matrix (list): The exponent matrix as a list of lists.
+    
+    Returns:
+        np.ndarray: Array of dependency vectors.
+    """
+    logger.info("Solving linear system in GF(2).")
+    matrix = np.array(matrix).T
+
+    reduced_matrix, marks = gauss_elim(matrix)  # Perform Gaussian elimination
+    null_basis = find_null_space_GF2(reduced_matrix.T, marks)  # Find null space vectors
+    return null_basis
+
+def solve_dependencies2(matrix):
+    """
     Perform linear algebra over GF(2) to find the left null space.
     """
     logger.info("Solving linear system in GF(2).")
     gf = galois.GF(2)
     A = gf(np.array(matrix))
+    # Vectors 'v' in left null space satisfy vA = 0
     return A.left_null_space()
-
 # -------------------------------------------------------------------
 # STEP 6: Attempt to Extract Factors
 # -------------------------------------------------------------------
 def extract_factors(N, relations, factorizations, dep_vectors):
     """
-    Use the dependency vectors (solutions in GF(2)) to attempt factor extraction.
-    Returns (p, q) if a non-trivial factor pair is found, otherwise (0, 0).
+    Use the dependency vectors to attempt factor extraction.
+    
+    Args:
+        N (int): The number to factor.
+        relations (list): List of relation identifiers.
+        factorizations (list): List of factorizations corresponding to each relation.
+        dep_vectors (np.ndarray): Array of dependency vectors.
+    
+    Returns:
+        tuple: A pair of factors (p, q) if found, otherwise (0, 0).
     """
     for r in dep_vectors:
         prod_left = 1
         prod_right = 1
         for idx, bit in enumerate(r):
             if bit == 1:
-                prod_left *= relations[idx]
+                prod_left *= relations[idx]  # Multiply corresponding relation values
                 for fac in factorizations[idx]:
-                    prod_right *= fac
+                    prod_right *= fac  # Multiply corresponding factors
 
-        sqrt_right = isqrt(prod_right)
-        factor_candidate = gcd(N, prod_left - sqrt_right)
+        sqrt_right = isqrt(prod_right)  # Compute integer square root
+        factor_candidate = gcd(N, prod_left - sqrt_right)  # Compute GCD to find a non-trivial factor
         if factor_candidate not in (1, N):
             other_factor = N // factor_candidate
             logger.info("Found factors: %d, %d", factor_candidate, other_factor)
             return factor_candidate, other_factor
 
-    return 0, 0
+    return 0, 0  # No factors found
 
 # -------------------------------------------------------------------
 # Main Quadratic Sieve Function
@@ -427,6 +643,13 @@ def quadratic_sieve(N, B=None):
     Perform the Quadratic Sieve on N.
     Splits the entire process into smaller steps.
     Logs timing for each stage.
+    
+    Args:
+        N (int): The number to factor.
+        B (int, optional): The bound for the factor base. If None, it is decided using a heuristic.
+    
+    Returns:
+        tuple: A pair of factors (p, q) if found, otherwise (0, 0).
     """
     overall_start = time.time()
     logger.info("========== Quadratic Sieve Start ==========")
@@ -451,20 +674,28 @@ def quadratic_sieve(N, B=None):
     logger.info("Step 3 (Sieve Interval) took %.3f seconds", step_end - step_start)
 
     # Step 4: Build Exponent Matrix
-    T = 1
     step_start = time.time()
-    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_vals, factor_base, T)
+    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_vals, factor_base, T=1)
     step_end = time.time()
     logger.info("Step 4 (Build Exponent Matrix) took %.3f seconds", step_end - step_start)
 
-    if len(matrix) < len(factor_base) + T:
+    if len(matrix) < len(factor_base) + 1:
         logger.warning("Not enough smooth relations found. Try increasing the sieve interval.")
         return 0, 0
+
     # Step 5: Solve for Dependencies (GF(2))
     step_start = time.time()
-    dep_vectors = solve_dependencies(matrix)
+    dep_vectors = solve_dependencies(np.array(matrix))
     step_end = time.time()
     logger.info("Step 5 (Solve Dependencies) took %.3f seconds", step_end - step_start)
+
+
+    # Step 5: Solve for Dependencies (GF(2))
+    step_start = time.time()
+    dep_vectors2 = solve_dependencies2(np.array(matrix))
+    step_end = time.time()
+    logger.info("Step 5.5 (Solve Dependencies) took %.3f seconds", step_end - step_start)
+
 
     # Step 6: Attempt to Extract Factors
     step_start = time.time()
@@ -481,6 +712,7 @@ def quadratic_sieve(N, B=None):
     logger.info("Total time for Quadratic Sieve: %.3f seconds", overall_end - overall_start)
     logger.info("========== Quadratic Sieve End ==========")
 
+
     return f1, f2
 
 # -------------------------------------------------------------------
@@ -491,7 +723,10 @@ if __name__ == '__main__':
     init_known_primes(limit=10000)
 
     # Example composite numbers
-    N = 41126566532996951593624199 * 2697660919
+    #N = 80672394923 * 16319916311
+    #N = 87463  # Smaller example for testing
+    N = 110945531268719200260254771214978881
 
     # Run Quadratic Sieve
     factor1, factor2 = quadratic_sieve(N)
+    print(factor1, factor2)
