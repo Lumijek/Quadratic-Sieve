@@ -2,8 +2,8 @@ import numpy as np
 import random
 import logging
 import time
-from math import ceil, floor, sqrt, exp, log, isqrt
-import galois
+from math import ceil, floor, exp, log, isqrt
+from sympy import sqrt
 from pprint import pprint
 from line_profiler import LineProfiler
 
@@ -215,6 +215,9 @@ def factorise(n, factors):
     Returns:
         int: The remaining part of n after factorization.
     """
+    if(n < 0):
+        factors.append(-1)
+        n = -n
     rem = n
     while True:
         if is_prime(rem):
@@ -315,7 +318,6 @@ def gauss_elim(x):
     marks = []
     
     for i in range(n):
-        # Find the leftmost True in row i
         row = x[i]
         ones = np.flatnonzero(row)
         if ones.size == 0:
@@ -324,11 +326,9 @@ def gauss_elim(x):
         pivot = ones[0]
         marks.append(pivot)
         
-        # Create a mask for rows that have True in the pivot column
         mask = x[:, pivot].copy()
         mask[i] = False
         
-        # XOR all masked rows with the current row
         x[mask] ^= row
     
     # Step 3: Convert back to int8 (0 or 1)
@@ -347,27 +347,27 @@ def find_null_space_GF2(reduced_matrix, pivot_rows):
         np.ndarray: Array of null space vectors.
     """
     n, m = reduced_matrix.shape
-    nulls = []  # List to store null space vectors
-    # Identify free rows (rows that are not pivot rows)
+    nulls = []
     free_rows = [row for row in range(n) if row not in pivot_rows]
-
+    k = 0
     for row in free_rows:
-        ones = np.where(reduced_matrix[row] == 1)[0]  # Columns with '1's in the free row
-        null = np.zeros(n)  # Initialize a null vector with zeros
-        null[row] = 1  # Set the position corresponding to the free row to '1'
-        i = 0  # Row index counter
+        ones = np.where(reduced_matrix[row] == 1)[0]
+        null = np.zeros(n)
+        null[row] = 1
 
-        for r in reduced_matrix:
-            for one in ones:
-                if r[one] == 1 and i in pivot_rows:
-                    null[i] = 1  # Set the corresponding pivot variable to '1' if needed
-            i += 1  # Move to the next row
+        # Vectorized version of the nested loop
+        mask = np.isin(np.arange(n), pivot_rows)  # Create a mask for pivot rows
+        relevant_cols = reduced_matrix[:, ones]  # Extract relevant columns (matching `ones`)
+        matching_rows = np.any(relevant_cols == 1, axis=1)  # Rows with `1` in `ones` columns
+        null[mask & matching_rows] = 1  # Update `null` only for matching pivot rows
 
-        nulls.append(null)  # Append the constructed null vector
-        break
+        nulls.append(null)
+        k += 1
+        if k == 5:
+            break
 
-    nulls = np.asarray(nulls, dtype=np.int8)  # Convert the list to a NumPy array
-    return nulls  # Return the array of null space vectors
+    nulls = np.asarray(nulls, dtype=np.int8)
+    return nulls
 
 # -------------------------------------------------------------------
 # Prime Sieve
@@ -382,12 +382,12 @@ def prime_sieve(n):
     Returns:
         list: List of prime numbers up to 'n'.
     """
-    sieve_array = np.ones((n+1,), dtype=bool)  # Initialize sieve array
-    sieve_array[0], sieve_array[1] = False, False  # 0 and 1 are not primes
+    sieve_array = np.ones((n+1,), dtype=bool)
+    sieve_array[0], sieve_array[1] = False, False
     for i in range(2, int(n**0.5) + 1):
         if sieve_array[i]:
-            sieve_array[i*2 :: i] = False  # Mark multiples of i as non-prime
-    return np.where(sieve_array)[0].tolist()  # Extract prime numbers
+            sieve_array[i*2 :: i] = False
+    return np.where(sieve_array)[0].tolist()
 
 # -------------------------------------------------------------------
 # Quadratic Sieve Helper Functions
@@ -470,13 +470,13 @@ def build_factor_base(N, B):
         list: The factor base as a list of primes.
     """
     fb = get_smooth_b(N, B)
-    logger.info("Factor base size: %d", len(fb))
+    logger.info("Factor base size: %d", len(fb) + 1) # +1 for the -1
     return fb
 
 # -------------------------------------------------------------------
 # STEP 3: Sieve Phase - Find Potential Smooth Values
 # -------------------------------------------------------------------
-def sieve_interval(N, factor_base, I_multiplier=18000):
+def sieve_interval(N, factor_base, I_multiplier=7500):
     """
     Sieve to find potential smooth values in the interval [base, base+I).
     
@@ -492,35 +492,34 @@ def sieve_interval(N, factor_base, I_multiplier=18000):
             - list: The array of partially factored values.
     """
     I = len(factor_base) * I_multiplier  # Determine interval size
-    base = floor(sqrt(N)) + 1  # Starting point for sieving
+    base = floor(sqrt(N))  # Starting point for sieving
 
+    half_I = I // 2
     # Evaluate the polynomial f(t) = t^2 - N over the interval
-    sieve_values = [poly(base + x, N) for x in range(I)]
+    x_values = [base + x for x in range(-half_I, half_I)]
+    sieve_values = [poly(x, N) for x in x_values]
 
     # Remove powers of 2 from each sieve value
     for i in range(I):
         while sieve_values[i] % 2 == 0:
             sieve_values[i] //= 2
-
     # Remove powers of other primes in the factor base
     for p in factor_base[1:]:  # Skip 2 as it's already handled
         root1, root2 = tonelli_shanks(N, p)  # Find square roots of N mod p
-        a = (root1 - base) % p  # Adjust roots to sieve offsets
-        b = (root2 - base) % p
-
-        # Eliminate multiples of p in the sieve
+        a = (root1 - base + half_I) % p  # Adjust roots to sieve offsets
+        b = (root2 - base + half_I) % p
         for r in [a, b]:
             while r < I:
                 while sieve_values[r] % p == 0:
                     sieve_values[r] //= p
                 r += p
 
-    return base, I, sieve_values
+    return base, I, sieve_values, x_values
 
 # -------------------------------------------------------------------
 # STEP 4: Build Exponent Matrix from Smooth Values
 # -------------------------------------------------------------------
-def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
+def build_exponent_matrix(N, base, I, sieve_values, factor_base, x_values, T=1):
     """
     Build the exponent matrix for the Quadratic Sieve.
     
@@ -541,16 +540,16 @@ def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
     matrix = []
     relations = []
     factorizations = []
-    fb_len = len(factor_base)
+    fb_len = len(factor_base) + 1 # +1 for the -1
     zero_row = [0] * fb_len
 
     for i_offset in range(I):
-        if sieve_values[i_offset] == 1:  # Check if the value is fully smooth over the factor base
+        if sieve_values[i_offset] == 1 or sieve_values[i_offset] == -1:  # Check if the value is fully smooth over the factor base
             if len(relations) == fb_len + T:
-                break  # Stop if enough relations are collected
+                break
 
             row = zero_row.copy()
-            value = poly(base + i_offset, N)  # Compute f(t) = t^2 - N
+            value = poly(x_values[i_offset], N)  # Compute f(t) = t^2 - N
 
             # Fully factorize the value using the factor base
             local_factors = []
@@ -566,7 +565,7 @@ def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
                 row[idx] = counts.get(prime, 0) % 2  # Record exponent modulo 2
 
             matrix.append(row)  # Add the row to the exponent matrix
-            relations.append(base + i_offset)  # Record the relation identifier
+            relations.append(x_values[i_offset])  # Record the relation identifier
             factorizations.append(local_factors)  # Store the factorization
 
     logger.info("Number of smooth relations: %d", len(relations))
@@ -592,15 +591,6 @@ def solve_dependencies(matrix):
     null_basis = find_null_space_GF2(reduced_matrix.T, marks)  # Find null space vectors
     return null_basis
 
-def solve_dependencies2(matrix):
-    """
-    Perform linear algebra over GF(2) to find the left null space.
-    """
-    logger.info("Solving linear system in GF(2).")
-    gf = galois.GF(2)
-    A = gf(np.array(matrix))
-    # Vectors 'v' in left null space satisfy vA = 0
-    return A.left_null_space()
 # -------------------------------------------------------------------
 # STEP 6: Attempt to Extract Factors
 # -------------------------------------------------------------------
@@ -627,6 +617,8 @@ def extract_factors(N, relations, factorizations, dep_vectors):
                     prod_right *= fac  # Multiply corresponding factors
 
         sqrt_right = isqrt(prod_right)  # Compute integer square root
+        prod_left = prod_left % N
+        sqrt_right = sqrt_right % N
         factor_candidate = gcd(N, prod_left - sqrt_right)  # Compute GCD to find a non-trivial factor
         if factor_candidate not in (1, N):
             other_factor = N // factor_candidate
@@ -652,7 +644,7 @@ def quadratic_sieve(N, B=None):
         tuple: A pair of factors (p, q) if found, otherwise (0, 0).
     """
     overall_start = time.time()
-    logger.info("========== Quadratic Sieve Start ==========")
+    logger.info("========== Quadratic Sieve V2 Start ==========")
     logger.info("Factoring N = %d", N)
 
     # Step 1: Decide Bound
@@ -669,13 +661,13 @@ def quadratic_sieve(N, B=None):
 
     # Step 3: Sieve Phase
     step_start = time.time()
-    base, I, sieve_vals = sieve_interval(N, factor_base)
+    base, I, sieve_vals, x_values = sieve_interval(N, factor_base)
     step_end = time.time()
     logger.info("Step 3 (Sieve Interval) took %.3f seconds", step_end - step_start)
 
     # Step 4: Build Exponent Matrix
     step_start = time.time()
-    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_vals, factor_base, T=1)
+    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_vals, factor_base, x_values, T=1)
     step_end = time.time()
     logger.info("Step 4 (Build Exponent Matrix) took %.3f seconds", step_end - step_start)
 
@@ -690,19 +682,11 @@ def quadratic_sieve(N, B=None):
     logger.info("Step 5 (Solve Dependencies) took %.3f seconds", step_end - step_start)
 
 
-    # Step 5: Solve for Dependencies (GF(2))
-    step_start = time.time()
-    dep_vectors2 = solve_dependencies2(np.array(matrix))
-    step_end = time.time()
-    logger.info("Step 5.5 (Solve Dependencies) took %.3f seconds", step_end - step_start)
-
-
     # Step 6: Attempt to Extract Factors
     step_start = time.time()
     f1, f2 = extract_factors(N, relations, factorizations, dep_vectors)
     step_end = time.time()
     logger.info("Step 6 (Extract Factors) took %.3f seconds", step_end - step_start)
-
     if f1 and f2:
         logger.info("Quadratic Sieve successful: %d * %d = %d", f1, f2, N)
     else:
@@ -726,7 +710,8 @@ if __name__ == '__main__':
     #N = 80672394923 * 16319916311
     #N = 87463  # Smaller example for testing
     N = 110945531268719200260254771214978881
+    N = 867626227567916279 * 970373053360845209
+    #N = 87463
 
     # Run Quadratic Sieve
     factor1, factor2 = quadratic_sieve(N)
-    print(factor1, factor2)
