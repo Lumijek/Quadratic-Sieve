@@ -2,8 +2,7 @@ import numpy as np
 import random
 import logging
 import time
-from math import ceil, floor, exp, log, isqrt
-from sympy import sqrt
+from math import sqrt, ceil, floor, exp, log2, log, isqrt
 from pprint import pprint
 from line_profiler import LineProfiler
 
@@ -21,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Global Known Primes for Primality Testing
 # -------------------------------------------------------------------
 _known_primes = [2, 3]
+prime_log_map = {}
 
 def init_known_primes(limit=1000):
     """
@@ -243,6 +243,17 @@ def factorise(n, factors):
             break
     return rem
 
+def factorise_fast(value, factor_base):
+    factors = []
+    if value < 0:
+        factors.append(-1)
+        value = -value
+    for factor in factor_base:
+        while(value % factor == 0):
+            factors.append(factor)
+            value //= factor
+    return sorted(factors), value == 1
+
 # -------------------------------------------------------------------
 # Tonelli-Shanks (Modular Square Root)
 # -------------------------------------------------------------------
@@ -431,9 +442,11 @@ def get_smooth_b(N, B):
     """
     primes = prime_sieve(B)  # Generate primes up to B
     factor_base = [2]  # Always include 2 in the factor base
+    prime_log_map[2] = 1
     for p in primes[1:]:  # Skip 2 and check for quadratic residues
         if legendre(N, p) == 1:
             factor_base.append(p)
+            prime_log_map[p] = round(log2(p))
     return factor_base
 
 # -------------------------------------------------------------------
@@ -498,28 +511,26 @@ def sieve_interval(N, factor_base, I_multiplier=7500):
     # Evaluate the polynomial f(t) = t^2 - N over the interval
     x_values = [base + x for x in range(-half_I, half_I)]
     sieve_values = [poly(x, N) for x in x_values]
+    sieve_logs = [0 for _ in range(I)]
 
-    # Remove powers of 2 from each sieve value
-    for i in range(I):
-        while sieve_values[i] % 2 == 0:
-            sieve_values[i] //= 2
     # Remove powers of other primes in the factor base
-    for p in factor_base[1:]:  # Skip 2 as it's already handled
+    for p in factor_base:  # Skip 2 as it's already handled
+        if p < 10: # no need to sieve small primes
+            continue
         root1, root2 = tonelli_shanks(N, p)  # Find square roots of N mod p
         a = (root1 - base + half_I) % p  # Adjust roots to sieve offsets
         b = (root2 - base + half_I) % p
         for r in [a, b]:
             while r < I:
-                while sieve_values[r] % p == 0:
-                    sieve_values[r] //= p
+                sieve_logs[r] += prime_log_map[p]
                 r += p
 
-    return base, I, sieve_values, x_values
+    return base, I, sieve_logs, sieve_values, x_values
 
 # -------------------------------------------------------------------
 # STEP 4: Build Exponent Matrix from Smooth Values
 # -------------------------------------------------------------------
-def build_exponent_matrix(N, base, I, sieve_values, factor_base, x_values, T=1):
+def build_exponent_matrix(N, base, I, sieve_logs, sieve_values, factor_base, x_values, B, T=1):
     """
     Build the exponent matrix for the Quadratic Sieve.
     
@@ -542,19 +553,23 @@ def build_exponent_matrix(N, base, I, sieve_values, factor_base, x_values, T=1):
     factorizations = []
     fb_len = len(factor_base) + 1 # +1 for the -1
     zero_row = [0] * fb_len
-
-    for i_offset in range(I):
-        if sieve_values[i_offset] == 1 or sieve_values[i_offset] == -1:  # Check if the value is fully smooth over the factor base
+    offset = 21
+    misses = 0
+    for i in range(I):
+        threshold = log2(abs(sieve_values[i])) - offset
+        if sieve_logs[i] > threshold:
             if len(relations) == fb_len + T:
                 break
 
-            row = zero_row.copy()
-            value = poly(x_values[i_offset], N)  # Compute f(t) = t^2 - N
+            value = sieve_values[i]
 
             # Fully factorize the value using the factor base
-            local_factors = []
-            factorise(value, local_factors)
-            local_factors.sort()
+            local_factors, factored = factorise_fast(value, factor_base)
+            if not factored:
+                misses += 1
+                continue
+
+            row = zero_row.copy()
 
             # Count each prime factor modulo 2 for the exponent matrix
             counts = {}
@@ -565,7 +580,7 @@ def build_exponent_matrix(N, base, I, sieve_values, factor_base, x_values, T=1):
                 row[idx] = counts.get(prime, 0) % 2  # Record exponent modulo 2
 
             matrix.append(row)  # Add the row to the exponent matrix
-            relations.append(x_values[i_offset])  # Record the relation identifier
+            relations.append(x_values[i])  # Record the relation identifier
             factorizations.append(local_factors)  # Store the factorization
 
     logger.info("Number of smooth relations: %d", len(relations))
@@ -644,7 +659,7 @@ def quadratic_sieve(N, B=None):
         tuple: A pair of factors (p, q) if found, otherwise (0, 0).
     """
     overall_start = time.time()
-    logger.info("========== Quadratic Sieve V2 Start ==========")
+    logger.info("========== Quadratic Sieve V3 Start ==========")
     logger.info("Factoring N = %d", N)
 
     # Step 1: Decide Bound
@@ -661,17 +676,17 @@ def quadratic_sieve(N, B=None):
 
     # Step 3: Sieve Phase
     step_start = time.time()
-    base, I, sieve_vals, x_values = sieve_interval(N, factor_base)
+    base, I, sieve_logs, sieve_vals, x_values = sieve_interval(N, factor_base)
     step_end = time.time()
     logger.info("Step 3 (Sieve Interval) took %.3f seconds", step_end - step_start)
 
     # Step 4: Build Exponent Matrix
     step_start = time.time()
-    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_vals, factor_base, x_values, T=1)
+    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_logs, sieve_vals, factor_base, x_values, B, T=1)
     step_end = time.time()
     logger.info("Step 4 (Build Exponent Matrix) took %.3f seconds", step_end - step_start)
 
-    if len(matrix) < len(factor_base) + 1:
+    if len(matrix) < len(factor_base) + 2:
         logger.warning("Not enough smooth relations found. Try increasing the sieve interval.")
         return 0, 0
 
