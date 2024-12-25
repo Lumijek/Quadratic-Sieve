@@ -3,6 +3,7 @@ import random
 import logging
 import time
 from math import sqrt, ceil, floor, exp, log2, log, isqrt
+from line_profiler import LineProfiler
 
 # -------------------------------------------------------------------
 # Configure Logging
@@ -318,39 +319,28 @@ def build_factor_base(N, B):
 # -------------------------------------------------------------------
 # STEP 3: Sieve Phase - Find Potential Smooth Values
 # -------------------------------------------------------------------
-def sieve_interval(N, factor_base, I_multiplier=7500):
-    """
-    Sieve to find potential smooth values in the interval [base, base+I).
-    
-    Args:
-        N (int): The number to factor.
-        factor_base (list): The factor base primes.
-        I_multiplier (int): Multiplier to determine the interval size based on factor base size.
-    
-    Returns:
-        tuple: 
-            - int: The base offset (floor(sqrt(N)) + 1).
-            - int: The length of the interval.
-            - list: The array of partially factored values.
-    """
-    I = len(factor_base) * I_multiplier
-    base = floor(sqrt(N))
 
+def sieve_interval(N, factor_base, I_multiplier=14000):
+    base = floor(sqrt(N))
+    I = len(factor_base) * I_multiplier
     half_I = I // 2
+
     x_values = [base + x for x in range(-half_I, half_I)]
-    sieve_values = [poly(x, N) for x in x_values]
-    sieve_logs = [0 for _ in range(I)]
+    sieve_values = [x * x - N for x in x_values]
+    sieve_logs = np.zeros(I, dtype=np.float64)
 
     for p in factor_base:
-        if p < 10: # no need to sieve small primes
+        if p < 20:
             continue
         root1, root2 = tonelli_shanks(N, p)
-        a = (root1 - base + half_I) % p  # Adjust roots to sieve offsets
+
+        a = (root1 - base + half_I) % p
         b = (root2 - base + half_I) % p
+
         for r in [a, b]:
-            while r < I:
-                sieve_logs[r] += prime_log_map[p]
-                r += p
+            if r < 0:
+                continue
+            sieve_logs[r::p] += prime_log_map[p]
 
     return base, I, sieve_logs, sieve_values, x_values
 
@@ -380,10 +370,13 @@ def build_exponent_matrix(N, base, I, sieve_logs, sieve_values, factor_base, x_v
     factorizations = []
     fb_len = len(factor_base)
     zero_row = [0] * fb_len
-    offset = 21
+    error = 17.5
+
+
     misses = 0
+    hits = 0
     for i in range(I):
-        threshold = log2(abs(sieve_values[i])) - offset
+        threshold = log2(abs(sieve_values[i])) - error
         if sieve_logs[i] > threshold:
             if len(relations) == fb_len + T:
                 break
@@ -394,7 +387,7 @@ def build_exponent_matrix(N, base, I, sieve_logs, sieve_values, factor_base, x_v
             if not factored:
                 misses += 1
                 continue
-
+            hits += 1
             row = zero_row.copy()
 
             counts = {}
@@ -546,7 +539,7 @@ if __name__ == '__main__':
     # Example composite numbers
     N = 87463
     #N = 87463
-    N = 867626227567916279 * 970373053360845209
+    N = 841921111621030451922256098390257311
 
     # Run Quadratic Sieve
     factor1, factor2 = quadratic_sieve(N)
