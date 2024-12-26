@@ -2,8 +2,10 @@ import numpy as np
 import random
 import logging
 import time
-from math import sqrt, ceil, floor, exp, log2, log, isqrt
+from math import ceil, floor, sqrt, exp, log, isqrt
+from pprint import pprint
 from line_profiler import LineProfiler
+
 
 # -------------------------------------------------------------------
 # Configure Logging
@@ -14,8 +16,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-prime_log_map = {}
+# -------------------------------------------------------------------
+# Global Known Primes for Primality Testing
+# -------------------------------------------------------------------
+_known_primes = [2, 3]
 
+def init_known_primes(limit=1000):
+    """
+    Initialize the known primes up to 'limit' using the 'is_prime' test.
+    This helps optimize primality checks for smaller numbers.
+    
+    Args:
+        limit (int): The upper bound to search for prime numbers.
+    """
+    global _known_primes
+    # Generate primes from 5 to limit, skipping even numbers
+    _known_primes += [x for x in range(5, limit, 2) if is_prime(x)]
+    logger.info("Initialized _known_primes up to %d. Total known primes: %d", limit, len(_known_primes))
+
+# -------------------------------------------------------------------
+# Number Theory Utilities
+# -------------------------------------------------------------------
 def gcd(a, b):
     """
     Compute the GCD of two integers a and b using Euclid's Algorithm.
@@ -74,28 +95,153 @@ def jacobi(a, m):
         a %= m
     return t if m == 1 else 0
 
-def factorise_fast(value, factor_base):
+# -------------------------------------------------------------------
+# Primality Testing (Miller-Rabin)
+# -------------------------------------------------------------------
+def _try_composite(a, d, n, s):
     """
-    Factors a number given a factor_base and determines if its smooth over the factor base
-
+    Internal helper for the Miller-Rabin primality test.
+    
     Args:
-        value (int): Value to factorise
-        factor_base (list): Factor base to factor value over
-
+        a (int): Base to test.
+        d (int): The odd part of n-1.
+        n (int): The number to test.
+        s (int): The exponent of 2 in n-1.
+    
     Returns:
-        list: the factors of the value
-        bool: true if the value factorises over the factor base and false otherwise
+        bool: True if n is definitely composite, False otherwise.
     """
-    factors = []
-    if value < 0:
-        factors.append(-1)
-        value = -value
-    for factor in factor_base[1:]:
-        while(value % factor == 0):
-            factors.append(factor)
-            value //= factor
-    return sorted(factors), value == 1
+    if pow(a, d, n) == 1:
+        return False
+    for i in range(s):
+        if pow(a, 2**i * d, n) == n - 1:
+            return False
+    return True  # n is definitely composite
 
+def is_prime(n, _precision_for_huge_n=16):
+    """
+    Miller-Rabin primality test with specific bases for certain ranges.
+    
+    Args:
+        n (int): The number to test for primality.
+        _precision_for_huge_n (int): Number of bases to test for very large n.
+    
+    Returns:
+        bool: True if n is likely prime, False if composite.
+    """
+    if n in _known_primes:
+        return True
+    if any((n % p) == 0 for p in _known_primes) or n in (0, 1):
+        return n in _known_primes  # ensures 2 or 3 recognized as prime, others not
+
+    d, s = n - 1, 0
+    while d % 2 == 0:
+        d >>= 1
+        s += 1
+
+    # Check small ranges with small sets of bases
+    if n < 1373653:
+        return not any(_try_composite(a, d, n, s) for a in (2, 3))
+    if n < 25326001:
+        return not any(_try_composite(a, d, n, s) for a in (2, 3, 5))
+    if n < 118670087467:
+        if n == 3215031751:
+            return False
+        return not any(_try_composite(a, d, n, s) for a in (2, 3, 5, 7))
+    if n < 2152302898747:
+        return not any(_try_composite(a, d, n, s) for a in (2, 3, 5, 7, 11))
+    if n < 3474749660383:
+        return not any(_try_composite(a, d, n, s) for a in (2, 3, 5, 7, 11, 13))
+    if n < 341550071728321:
+        return not any(_try_composite(a, d, n, s) for a in (2, 3, 5, 7, 11, 13, 17))
+
+    # Otherwise, fall back to testing with known primes
+    return not any(_try_composite(a, d, n, s) 
+                   for a in _known_primes[:_precision_for_huge_n])
+
+# -------------------------------------------------------------------
+# Factorization (Brent's Method)
+# -------------------------------------------------------------------
+def brent(N):
+    """
+    Brent's factorization algorithm (variation of Pollard's Rho).
+    Returns a non-trivial factor of N.
+    
+    Args:
+        N (int): The composite number to factor.
+    
+    Returns:
+        int: A non-trivial factor of N.
+    """
+    if N % 2 == 0:
+        return 2
+
+    y = random.randint(1, N - 1)
+    c = random.randint(1, N - 1)
+    m = random.randint(1, N - 1)
+
+    g, r, q = 1, 1, 1
+    while g == 1:
+        x = y
+        for _ in range(r):
+            y = (y * y % N + c) % N
+        k = 0
+        while k < r and g == 1:
+            ys = y
+            for _ in range(min(m, r - k)):
+                y = (y * y % N + c) % N
+                q = (q * abs(x - y)) % N
+            g = gcd(q, N)
+            k += m
+        r <<= 1
+
+    if g == N:
+        while True:
+            ys = (ys * ys % N + c) % N
+            g = gcd(abs(x - ys), N)
+            if g > 1:
+                break
+    return g
+
+def factorise(n, factors):
+    """
+    Factorize 'n' and accumulate found factors in 'factors'.
+    
+    Args:
+        n (int): The number to factorize.
+        factors (list): The list to store found factors.
+    
+    Returns:
+        int: The remaining part of n after factorization.
+    """
+    rem = n
+    while True:
+        if is_prime(rem):
+            factors.append(rem)
+            break
+
+        f = brent(rem)
+        # If the factor is the same as remainder, try again
+        while f == rem:
+            f = brent(rem)
+
+        if f and f < rem:
+            if is_prime(f):
+                factors.append(f)
+                rem //= f
+            else:
+                rem_f = factorise(f, factors)
+                rem = (rem // f) * rem_f
+                # Remove rem_f if it was appended
+                if rem_f in factors:
+                    factors.remove(rem_f)
+        else:
+            break
+    return rem
+
+# -------------------------------------------------------------------
+# Tonelli-Shanks (Modular Square Root)
+# -------------------------------------------------------------------
 def tonelli_shanks(a, p):
     """
     Solve x^2 ≡ a (mod p) for x.
@@ -119,6 +265,7 @@ def tonelli_shanks(a, p):
             x = (x * pow(2, (p-1)//4, p)) % p
         return x, p - x
 
+    # General Tonelli-Shanks
     d = 2
     symb = 0
     while symb != -1:
@@ -144,6 +291,9 @@ def tonelli_shanks(a, p):
     x = (pow(a, (t+1)//2, p) * pow(D, m//2, p)) % p
     return x, p - x
 
+# -------------------------------------------------------------------
+# Gaussian Elimination and Null Space Extraction
+# -------------------------------------------------------------------
 def gauss_elim(x):
     """
     Perform Gaussian elimination on the binary matrix 'x' over GF(2).
@@ -157,6 +307,7 @@ def gauss_elim(x):
             - np.ndarray: Row-echelon form of the matrix (in-place, dtype=int8).
             - list: Sorted list of pivot column indices.
     """
+    # Step 1: Convert to bool for faster XOR
     x = x.astype(bool, copy=False)
 
     n, m = x.shape
@@ -176,6 +327,7 @@ def gauss_elim(x):
         
         x[mask] ^= row
     
+    # Step 3: Convert back to int8 (0 or 1)
     return x.astype(np.int8, copy=False), sorted(marks)
 
 
@@ -193,21 +345,20 @@ def find_null_space_GF2(reduced_matrix, pivot_rows):
     n, m = reduced_matrix.shape
     nulls = []
     free_rows = [row for row in range(n) if row not in pivot_rows]
-    k = 0
+
     for row in free_rows:
         ones = np.where(reduced_matrix[row] == 1)[0]
         null = np.zeros(n)
         null[row] = 1
 
-        mask = np.isin(np.arange(n), pivot_rows)
-        relevant_cols = reduced_matrix[:, ones]
-        matching_rows = np.any(relevant_cols == 1, axis=1)
-        null[mask & matching_rows] = 1
+        # Vectorized version of the nested loop
+        mask = np.isin(np.arange(n), pivot_rows)  # Create a mask for pivot rows
+        relevant_cols = reduced_matrix[:, ones]  # Extract relevant columns (matching `ones`)
+        matching_rows = np.any(relevant_cols == 1, axis=1)  # Rows with `1` in `ones` columns
+        null[mask & matching_rows] = 1  # Update `null` only for matching pivot rows
 
         nulls.append(null)
-        k += 1
-        if k == 5:
-            break
+        break
 
     nulls = np.asarray(nulls, dtype=np.int8)
     return nulls
@@ -225,13 +376,16 @@ def prime_sieve(n):
     Returns:
         list: List of prime numbers up to 'n'.
     """
-    sieve_array = np.ones((n + 1,), dtype=bool)
+    sieve_array = np.ones((n+1,), dtype=bool)
     sieve_array[0], sieve_array[1] = False, False
-    for i in range(2, int(n ** 0.5) + 1):
+    for i in range(2, int(n**0.5) + 1):
         if sieve_array[i]:
-            sieve_array[i * 2::i] = False
+            sieve_array[i*2 :: i] = False
     return np.where(sieve_array)[0].tolist()
 
+# -------------------------------------------------------------------
+# Quadratic Sieve Helper Functions
+# -------------------------------------------------------------------
 def poly(t, n):
     """
     Polynomial used in the Quadratic Sieve: f(t) = t^2 - n.
@@ -243,21 +397,20 @@ def poly(t, n):
     Returns:
         int: The value of the polynomial at t.
     """
-    return t*t - n
+    return t*t - n  # Equivalent to pow(t, 2) but slightly faster
 
-def find_b(N, reduction=1):
+def find_b(N):
     """
     Typical heuristic to determine the factor base bound B.
     
     Args:
         N (int): The number to factor.
-        reduction (int): Number to divide heuristic B value by
     
     Returns:
         int: The bound B for the factor base.
     """
     x = ceil(exp(sqrt(0.5 * log(N) * log(log(N))))) + 1
-    return x // reduction
+    return x // 16
 
 def get_smooth_b(N, B):
     """
@@ -270,13 +423,11 @@ def get_smooth_b(N, B):
     Returns:
         list: The factor base as a list of primes.
     """
-    primes = prime_sieve(B)
-    factor_base = [-1, 2]
-    prime_log_map[2] = 1
+    primes = prime_sieve(B)  # Generate primes up to B
+    factor_base = [2]  # Always include 2 in the factor base
     for p in primes[1:]:  # Skip 2 and check for quadratic residues
         if legendre(N, p) == 1:
             factor_base.append(p)
-            prime_log_map[p] = round(log2(p))
     return factor_base
 
 # -------------------------------------------------------------------
@@ -319,35 +470,51 @@ def build_factor_base(N, B):
 # -------------------------------------------------------------------
 # STEP 3: Sieve Phase - Find Potential Smooth Values
 # -------------------------------------------------------------------
+def sieve_interval(N, factor_base, I_multiplier=7500):
+    """
+    Sieve to find potential smooth values in the interval [base, base+I).
+    
+    Args:
+        N (int): The number to factor.
+        factor_base (list): The factor base primes.
+        I_multiplier (int): Multiplier to determine the interval size based on factor base size.
+    
+    Returns:
+        tuple: 
+            - int: The base offset (floor(sqrt(N)) + 1).
+            - int: The length of the interval.
+            - list: The array of partially factored values.
+    """
+    I = len(factor_base) * I_multiplier  # Determine interval size
+    base = floor(sqrt(N)) + 1  # Starting point for sieving
 
-def sieve_interval(N, factor_base, I_multiplier=14000):
-    base = floor(sqrt(N))
-    I = len(factor_base) * I_multiplier
-    half_I = I // 2
+    # Evaluate the polynomial f(t) = t^2 - N over the interval
+    sieve_values = [poly(base + x, N) for x in range(I)]
 
-    x_values = [base + x for x in range(-half_I, half_I)]
-    sieve_values = [x * x - N for x in x_values]
-    sieve_logs = np.zeros(I, dtype=np.float64)
+    # Remove powers of 2 from each sieve value
+    for i in range(I):
+        while sieve_values[i] % 2 == 0:
+            sieve_values[i] //= 2
 
-    for p in factor_base:
-        if p < 20:
-            continue
-        root1, root2 = tonelli_shanks(N, p)
+    # Remove powers of other primes in the factor base
+    for p in factor_base[1:]:  # Skip 2 as it's already handled
+        root1, root2 = tonelli_shanks(N, p)  # Find square roots of N mod p
+        a = (root1 - base) % p  # Adjust roots to sieve offsets
+        b = (root2 - base) % p
 
-        a = (root1 - base + half_I) % p
-        b = (root2 - base + half_I) % p
-
+        # Eliminate multiples of p in the sieve
         for r in [a, b]:
-            if r < 0:
-                continue
-            sieve_logs[r::p] += prime_log_map[p]
+            while r < I:
+                while sieve_values[r] % p == 0:
+                    sieve_values[r] //= p
+                r += p
 
-    return base, I, sieve_logs, sieve_values, x_values
+    return base, I, sieve_values
 
 # -------------------------------------------------------------------
 # STEP 4: Build Exponent Matrix from Smooth Values
 # -------------------------------------------------------------------
-def build_exponent_matrix(N, base, I, sieve_logs, sieve_values, factor_base, x_values, B, T=1):
+def build_exponent_matrix(N, base, I, sieve_values, factor_base, T=1):
     """
     Build the exponent matrix for the Quadratic Sieve.
     
@@ -370,36 +537,31 @@ def build_exponent_matrix(N, base, I, sieve_logs, sieve_values, factor_base, x_v
     factorizations = []
     fb_len = len(factor_base)
     zero_row = [0] * fb_len
-    error = 17.5
 
-
-    misses = 0
-    hits = 0
-    for i in range(I):
-        threshold = log2(abs(sieve_values[i])) - error
-        if sieve_logs[i] > threshold:
+    for i_offset in range(I):
+        if sieve_values[i_offset] == 1:  # Check if the value is fully smooth over the factor base
             if len(relations) == fb_len + T:
                 break
 
-            value = sieve_values[i]
-
-            local_factors, factored = factorise_fast(value, factor_base)
-            if not factored:
-                misses += 1
-                continue
-            hits += 1
             row = zero_row.copy()
+            value = poly(base + i_offset, N)  # Compute f(t) = t^2 - N
 
+            # Fully factorize the value using the factor base
+            local_factors = []
+            factorise(value, local_factors)
+            local_factors.sort()
+
+            # Count each prime factor modulo 2 for the exponent matrix
             counts = {}
             for fac in local_factors:
                 counts[fac] = counts.get(fac, 0) + 1
 
             for idx, prime in enumerate(factor_base):
-                row[idx] = counts.get(prime, 0) % 2
+                row[idx] = counts.get(prime, 0) % 2  # Record exponent modulo 2
 
-            matrix.append(row)
-            relations.append(x_values[i])
-            factorizations.append(local_factors)
+            matrix.append(row)  # Add the row to the exponent matrix
+            relations.append(base + i_offset)  # Record the relation identifier
+            factorizations.append(local_factors)  # Store the factorization
 
     logger.info("Number of smooth relations: %d", len(relations))
     return matrix, relations, factorizations
@@ -445,14 +607,12 @@ def extract_factors(N, relations, factorizations, dep_vectors):
         prod_right = 1
         for idx, bit in enumerate(r):
             if bit == 1:
-                prod_left *= relations[idx]
+                prod_left *= relations[idx]  # Multiply corresponding relation values
                 for fac in factorizations[idx]:
-                    prod_right *= fac
+                    prod_right *= fac  # Multiply corresponding factors
 
-        sqrt_right = isqrt(prod_right)
-        prod_left = prod_left % N
-        sqrt_right = sqrt_right % N
-        factor_candidate = gcd(N, prod_left - sqrt_right)
+        sqrt_right = isqrt(prod_right)  # Compute integer square root
+        factor_candidate = gcd(N, prod_left - sqrt_right)  # Compute GCD to find a non-trivial factor
         if factor_candidate not in (1, N):
             other_factor = N // factor_candidate
             logger.info("Found factors: %d, %d", factor_candidate, other_factor)
@@ -477,7 +637,7 @@ def quadratic_sieve(N, B=None):
         tuple: A pair of factors (p, q) if found, otherwise (0, 0).
     """
     overall_start = time.time()
-    logger.info("========== Quadratic Sieve V3 Start ==========")
+    logger.info("========== Quadratic Sieve V1 Start ==========")
     logger.info("Factoring N = %d", N)
 
     # Step 1: Decide Bound
@@ -494,13 +654,13 @@ def quadratic_sieve(N, B=None):
 
     # Step 3: Sieve Phase
     step_start = time.time()
-    base, I, sieve_logs, sieve_vals, x_values = sieve_interval(N, factor_base)
+    base, I, sieve_vals = sieve_interval(N, factor_base)
     step_end = time.time()
     logger.info("Step 3 (Sieve Interval) took %.3f seconds", step_end - step_start)
 
     # Step 4: Build Exponent Matrix
     step_start = time.time()
-    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_logs, sieve_vals, factor_base, x_values, B, T=1)
+    matrix, relations, factorizations = build_exponent_matrix(N, base, I, sieve_vals, factor_base, T=1)
     step_end = time.time()
     logger.info("Step 4 (Build Exponent Matrix) took %.3f seconds", step_end - step_start)
 
@@ -514,11 +674,13 @@ def quadratic_sieve(N, B=None):
     step_end = time.time()
     logger.info("Step 5 (Solve Dependencies) took %.3f seconds", step_end - step_start)
 
+
     # Step 6: Attempt to Extract Factors
     step_start = time.time()
     f1, f2 = extract_factors(N, relations, factorizations, dep_vectors)
     step_end = time.time()
     logger.info("Step 6 (Extract Factors) took %.3f seconds", step_end - step_start)
+
     if f1 and f2:
         logger.info("Quadratic Sieve successful: %d * %d = %d", f1, f2, N)
     else:
@@ -535,10 +697,15 @@ def quadratic_sieve(N, B=None):
 # Example Usage
 # -------------------------------------------------------------------
 if __name__ == '__main__':
+    # Initialize small primes list
+    init_known_primes(limit=10000)
+
     # Example composite numbers
-    N = 87463
-    #N = 87463
-    #N = 841921111621030451922256098390257311
-    
+    #N = 80672394923 * 16319916311
+    #N = 87463  # Smaller example for testing
+    N = 110945531268719200260254771214978881
+    N = 867626227567916279 * 970373053360845209
+
+
     # Run Quadratic Sieve
     factor1, factor2 = quadratic_sieve(N)

@@ -539,6 +539,6 @@ if __name__ == '__main__':
     N = 87463
     #N = 87463
     #N = 841921111621030451922256098390257311
-    
+
     # Run Quadratic Sieve
     factor1, factor2 = quadratic_sieve(N)
