@@ -94,7 +94,7 @@ def factorise_fast(value, factor_base):
         while(value % factor == 0):
             factors.append(factor)
             value //= factor
-    return sorted(factors), value == 1
+    return sorted(factors), value
 
 def tonelli_shanks(a, p):
     """
@@ -294,7 +294,7 @@ def decide_bound(N, B=None):
         int: The bound B for the factor base.
     """
     if B is None:
-        B = find_b(N)
+        B = find_b(N, 24)
     logger.info("Using B = %d", B)
     return B
 
@@ -320,7 +320,7 @@ def build_factor_base(N, B):
 # STEP 3: Sieve Phase - Find Potential Smooth Values
 # -------------------------------------------------------------------
 
-def sieve_interval(N, factor_base, I_multiplier=14000):
+def sieve_interval(N, factor_base, I_multiplier=40000):
     base = floor(sqrt(N))
     I = len(factor_base) * I_multiplier
     half_I = I // 2
@@ -347,6 +347,17 @@ def sieve_interval(N, factor_base, I_multiplier=14000):
 # -------------------------------------------------------------------
 # STEP 4: Build Exponent Matrix from Smooth Values
 # -------------------------------------------------------------------
+def generate_indices(I):
+    middle = I // 2
+    yield middle
+    for offset in range(1, max(middle + 1, I - middle)):
+        left = middle - offset
+        right = middle + offset
+        if left >= 0:
+            yield left
+        if right < I:
+            yield right
+
 def build_exponent_matrix(N, base, I, sieve_logs, sieve_values, factor_base, x_values, B, T=1):
     """
     Build the exponent matrix for the Quadratic Sieve.
@@ -370,37 +381,51 @@ def build_exponent_matrix(N, base, I, sieve_logs, sieve_values, factor_base, x_v
     factorizations = []
     fb_len = len(factor_base)
     zero_row = [0] * fb_len
-    error = 17.5
-
+    error = 20
 
     misses = 0
     hits = 0
+
+    large_prime_bound = B * 128
+    partials = {}
+    lp_found = 0
     for i in range(I):
         threshold = log2(abs(sieve_values[i])) - error
         if sieve_logs[i] > threshold:
             if len(relations) == fb_len + T:
                 break
+            mark = False
+            relation = x_values[i]
+            local_factors, value = factorise_fast(sieve_values[i], factor_base)
 
-            value = sieve_values[i]
+            if(value != 1 and value < large_prime_bound):
+                if value not in partials:
+                    partials[value] = (x_values[i], local_factors)
+                    continue
+                else:
+                    lp_found += 1
+                    relation = relation * partials[value][0]
+                    local_factors += partials[value][1]
+                    mark = True
 
-            local_factors, factored = factorise_fast(value, factor_base)
-            if not factored:
-                misses += 1
+            elif value != 1:
                 continue
-            hits += 1
+
             row = zero_row.copy()
 
             counts = {}
+
             for fac in local_factors:
                 counts[fac] = counts.get(fac, 0) + 1
 
             for idx, prime in enumerate(factor_base):
                 row[idx] = counts.get(prime, 0) % 2
 
+            if mark == True:
+                local_factors.append(value * value)
             matrix.append(row)
-            relations.append(x_values[i])
+            relations.append(relation)
             factorizations.append(local_factors)
-
     logger.info("Number of smooth relations: %d", len(relations))
     return matrix, relations, factorizations
 
@@ -538,7 +563,9 @@ if __name__ == '__main__':
     # Example composite numbers
     N = 87463
     #N = 87463
-    #N = 841921111621030451922256098390257311
+    N = 841921111621030451922256098390257311
+    #N = 34319716549404711043833213797701
+    N = 97245170828229363259 * 49966345331749027373
     
     # Run Quadratic Sieve
     factor1, factor2 = quadratic_sieve(N)
