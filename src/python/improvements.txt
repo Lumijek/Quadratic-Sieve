@@ -2,7 +2,7 @@ Improvements:
 1. Sieve from [sqrt(n) - I / 2, sqrt(n) + I / 2] instead of [sqrt(n), sqrt(n) + I] -- X DONE
 2. Use logarithms for approximations instead of division -- X DONE
 3. Don't use small prime factors -- X DONE
-4. Implement the Large Prime Variation of the Quadratic Sieve
+4. Implement the Large Prime Variation of the Quadratic Sieve -- X DONE
 5. Implement multiple polynomials
 6. Implement self initialization for multiple polynomials
 7. Implement the Double Large Prime Variation of the Quadratic Sieve
