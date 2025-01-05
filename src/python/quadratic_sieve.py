@@ -519,13 +519,11 @@ class QuadraticSieve:
 if __name__ == '__main__':
     # Example usage
     N = 97245170828229363259 * 49966345331749027373
-    gc.disable()
+    gc.disable() 
 
     # Create QuadraticSieve instance with default hyperparameters
-    qs = QuadraticSieve(I_multiplier=40000, reduction=24, T=1)
+    qs = QuadraticSieve(I_multiplier=1000, reduction=24, T=1)
 
-    # Alternatively, pass custom hyperparameters
-    # qs = QuadraticSieve(I_multiplier=50000, reduction=2, T=2)
 
     factor1, factor2 = qs.factor(N)
 
